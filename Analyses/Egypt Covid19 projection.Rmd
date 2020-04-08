@@ -1,0 +1,137 @@
+---
+title: "Egypt Covid19 projection"
+author: "Mohamed Elashri"
+date: "4/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn=-1)
+
+```
+
+## Introduction 
+
+the spread of covid19 virus in egypt looks safe for now. regarding the annouanced confirmed cases in egypt seems low. But still it follows an exponential curve which seems dangerous.  I just want to answer how fast will the virus spread in the Egypt? 
+
+I will follow a simple and maybe naive approch to this method to predict Covid19 growth: fit the pattern in China, then apply it to the Egypt data. Of course, Egypt and China are different countries with different public health systems, but I feel that this will at least give a first order estimate of how quickly the virus will spread.
+
+
+## Data prepration 
+
+```{r}
+## calling necessary library
+library(data.table)
+library(ggplot2)
+
+```
+
+Now we call the data from JHU JHU Center for Systems Science & Engineering, and ultiamtely. 
+
+```{r}
+main = fread('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv')
+names(main) = tolower(names(main))
+names(main)[1:2] = c('province','country')
+main = melt(main, id.vars = c('province','country','lat','long'))
+setnames(main, c('variable','value'), c('date','cases'))
+main[, date := as.Date(date, format = '%m/%d/%y')]
+
+
+china = main[country == 'China']
+china = china[,.(cases = sum(cases)), by = .(country,date)]
+china = china[, pchg := (cases-shift(cases,1))/shift(cases,1)]
+china = china[, days := 1:nrow(china)]
+
+```
+
+
+
+
+
+### china data fit 
+
+Let’s have a look at the Chinese data so far
+
+```{r}
+ggplot(data = china) + geom_line(aes(x = date, y = cases),size =3, color ="red")
+```
+
+
+lets now  fit this pattern  with a sigmoid using non-linear least squares.
+
+```{r}
+fit = nls(cases ~ SSlogis(days, Asym, xmid, scal), data = china)
+china[, yhat := predict(fit,china)]
+ggplot(data = china) + geom_line(aes(x = days, y = cases),size =3, color ="red") + geom_line(aes(x = days, y=yhat), color = 'blue',size= 3)
+
+```
+
+
+Projecting this pattern backwards, it’s possible to estimate when China reached 1322 cases, which is the current number in the Egypt. 
+
+```{r}
+dt = data.table(days = -20:5, cases = NA)
+dt[,yhat := predict(fit,dt)] # day 0 for roughly 60 cases
+print(dt[,.(days,yhat)])
+
+```
+
+
+## Project Egypt Case Count
+
+Now let’s assume the Egypt is in “day 0” of the Chinese outbreak, and project fowards from there.
+
+```{r}
+dt = data.table(days = -20:20, cases = NA)
+dt[,yhat := predict(fit,dt)] # day -13 for roughly 60 cases
+
+egypt = main[country == 'Egypt']
+egypt = egypt[,.(cases = sum(cases)), by = .(country,date)]
+egypt = egypt[, days:= NA]
+
+future = data.table(country = 'Egypt', date = as.Date(character(0)), cases = NA, days = 0:40)
+
+```
+
+```{r}
+egypt = rbind(egypt, future)
+egypt[, yhat := predict(fit, egypt)]
+egypt[, date := as.Date(date, format = '%m/%d/%y')]
+egypt[, project := ifelse(is.na(yhat), 0, 1)]
+egypt[, dayid := cumsum(project)]
+
+initdate = egypt[76, date]
+egypt[is.na(date), date := initdate + dayid]
+egypt[project == 1, cases := round(yhat,1)]
+
+```
+
+
+
+
+```{r}
+ggplot(data = egypt) + geom_line(aes(x = date, y = cases), size = 1.25) + geom_line(aes(x = date, y = yhat), color = 'red', size = 1.25) +
+scale_x_date(date_breaks = "5 day") +
+theme(axis.text.x=element_text(angle=60, hjust=1)) +
+ggtitle('Egypt projected case count (projection in red)')
+
+```
+
+```{r}
+print(egypt[dayid>0 & dayid <71, .(date, cases)])
+```
+
+
+## Results 
+
+According to these numbers, Egypt can expect to exceed 10000 cases in the third week of April. This is about two weeks from now. This gives egyptian government with 1-3 more weeks to prepare. Tasking into consideration the measurnments that the government imposed already and the health care emergecy situation, it is hard to reach this worst case senario is hard to believe that this would occur unless something happens extraordiary. people need to practise social distance and officials need to work on this problem with all its resources. 
+
+
+**Contact**
+
+For any question or feedback, you can [contact me](https://melashri.net/contact-me/).
+
+
+
+*Go back to [Mohamed Elashri](https://melashri.net/)*.
