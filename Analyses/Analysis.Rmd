@@ -1,0 +1,205 @@
+---
+title: "Covid Analysis"
+author: "Mohamed Elashri"
+date: "4/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn=-1)
+
+```
+
+## Forcasting COVID-19 Deaths
+
+I'm forcasting the deaths due to covid-19 virus based on simple featbility model.  
+Some discussion about the infection models propose that about the exposure perecentage to the covid-19 will be about 70% 
+
+### Assumptions 
+
+** 70% of world people will be exposured to 
+** 10% Infection efficacy > 10% of exposured people will be positive cases
+** 1% mortality rate 
+
+```{r}
+#deaths in each country
+expectedtotalFatalities = 0.7*0.1*0.01
+
+#observations used for the trends
+daysWindow <- 9
+```
+
+
+
+## Data
+
+```{r}
+library(stringr)
+train <- read.csv("train.csv", stringsAsFactors=FALSE)
+train$ProviceCountry <- paste(train$Country_Region,train$Province_State,sep=":")
+
+trainCountry <- train[train$Province_State == "",]
+
+covid19_datapopulation <- read.csv("covid19_data - population.csv", stringsAsFactors=FALSE)
+rownames(covid19_datapopulation) <- paste(covid19_datapopulation$Country,":",sep="")
+
+
+totalPoulation <- as.numeric(str_replace_all(covid19_datapopulation$Population_2020,",",""))
+totalUrbanPoulation <- as.numeric(str_replace_all(covid19_datapopulation$Urban_pop_pct,"\\%",""))/100.0
+totalUrbanPoulation[is.na(totalUrbanPoulation)] <- 1.0;
+totalUrbanPoulation <- totalPoulation*totalUrbanPoulation
+
+
+covid19_datapopulation$ExpectedFatalities <- expectedtotalFatalities*(
+                                                  totalUrbanPoulation + 
+                                                    0.1*(totalPoulation-totalUrbanPoulation)
+                                              )
+
+
+trainCountry$PerFatalities <- trainCountry$Fatalities/covid19_datapopulation[trainCountry$Country_Region,"ExpectedFatalities"]
+
+trainCountry <- trainCountry[trainCountry$Fatalities > 0,]
+
+expfatalities <- covid19_datapopulation$ExpectedFatalities/1.0e6
+names(expfatalities) <- covid19_datapopulation$Country
+expfatalities <- expfatalities[order(-expfatalities)]
+plot.new()
+op <- par(no.readonly = TRUE)
+par(mar=c(8,4,4,4),pty="m")
+#barplot(expfatalities[1:30],las=2,cex.names =0.70,cex.axis = 0.60,horiz = TRUE,main="Expected Fatalities",xlab="MIllions")
+barplot(expfatalities[1:30],las=2,cex.names =0.70,cex.axis = 0.60,main="Expected Deaths",ylab="Millions")
+
+```
+
+
+Let us plot some trends
+
+```{r}
+par(op)
+Country_Region <- names(table(trainCountry$Country_Region))
+totaldeaths <- numeric()
+for (ctr in Country_Region)
+{
+   totaldeaths <- append(totaldeaths,max(trainCountry[trainCountry$Country_Region == ctr,"Fatalities"]))
+}
+names(totaldeaths) <- Country_Region
+totaldeaths <- totaldeaths[order(-totaldeaths)]
+
+plot(trainCountry[trainCountry$Country_Region == names(totaldeaths[1]),"Fatalities"],main="Fatalities",xlab="Days",ylab="Fatalities")
+for (ctr in names(totaldeaths[1:25]))
+{
+  linp <- trainCountry[trainCountry$Country_Region == ctr,"Fatalities"] 
+  lines(linp)
+  text(length(linp)-1,linp[length(linp)],ctr)
+}
+
+```
+
+```{r}
+plot(trainCountry[trainCountry$Country_Region == names(totaldeaths[1]),"PerFatalities"],main="% Fatalities",xlab="Days",ylab=" % Fatalities")
+for (ctr in names(totaldeaths[1:25]))
+{
+  linp <- trainCountry[trainCountry$Country_Region == ctr,"PerFatalities"]
+  lines(linp)
+  text(length(linp)-1,linp[length(linp)],ctr)
+}
+
+```
+
+```{r}
+par(op)
+
+par(mfrow=c(3,3),cex=0.5)
+for (cn in c(1:17,19:30))
+{
+  endDay <- 14
+  countryNumber <- cn
+  
+  mainName <- paste("March 24",names(totaldeaths[countryNumber]))
+  
+  datsetone <- trainCountry[trainCountry$Country_Region == names(totaldeaths[countryNumber]),"PerFatalities"]
+  datsetchange <- c(datsetone[1],datsetone[2:length(datsetone)]-datsetone[1:(length(datsetone)-1)])
+  lastobs <- length(datsetone)
+  datsetchange <- 0.35*datsetchange + 
+                  0.65*c(datsetone[1],0.5*(datsetone[3:lastobs]-datsetone[1:(length(datsetone)-2)]),datsetchange[lastobs])
+  
+  datasetone <- as.data.frame(cbind(days=c(1:length(datsetone)),fatalities = datsetone,newfatalities = datsetchange))
+  numdays <- nrow(datasetone)
+
+  ndays <- max(c(numdays - endDay,7))
+  startday <- max(1,ndays - daysWindow)
+  
+  datasetone <- rbind(datasetone,cbind(days=c(180:185),fatalities = rep(1,6),newfatalities = rep(0,6)))
+  
+  daysrange <- append(c(startday:ndays),c((nrow(datasetone)-5):nrow(datasetone)))
+  
+  
+  roestimate <- try(nls(fatalities ~ SSlogis(days, Asym, xmid, scal),data = datasetone[daysrange,],control=list(warnOnly=TRUE)))
+  
+  smo <- summary(roestimate)
+  predictedTotalCases <- SSlogis(c(1:120),smo$coefficients[1,1],smo$coefficients[2,1],smo$coefficients[3,1])
+  ymax <- max(c(predictedTotalCases,datasetone$fatalities))
+
+  plot(predictedTotalCases,ylim=c(0,ymax),type="l",lty=2,xlab="days",ylab="% Fatalities",main=mainName)
+  lines(datasetone$days[c(1:ndays)],datasetone$fatalities[c(1:ndays)],lwd=3)
+  
+  newcases <- plogis(c(1:120),1.0/smo$coefficients[1,1],1.0/smo$coefficients[3,1],smo$coefficients[2,1])
+  lines(10*newcases,lty=5)
+  
+  lines(datasetone$days[c(1:ndays)],10*datasetone$newfatalities[c(1:ndays)],lty=4,lwd=2)
+  
+
+  endDay <- 7
+  mainName <- paste("March 31",names(totaldeaths[countryNumber]))
+
+  ndays <- max(c(numdays - endDay,7))
+  startday <- max(1,ndays - daysWindow)
+  
+  daysrange <- append(c(startday:ndays),c((nrow(datasetone)-5):nrow(datasetone)))
+  roestimate <- try(nls(fatalities ~ SSlogis(days, Asym, xmid, scal),data = datasetone[daysrange,],control=list(warnOnly=TRUE)))
+  
+  if (!inherits(roestimate, "try-error"))
+  {
+  
+    smo <- summary(roestimate)
+    predictedTotalCases <- SSlogis(c(1:120),smo$coefficients[1,1],smo$coefficients[2,1],smo$coefficients[3,1])
+    ymax <- max(c(predictedTotalCases,datasetone$fatalities))
+    plot(predictedTotalCases,ylim=c(0,ymax),type="l",lty=2,xlab="days",ylab="% Fatalities",main=mainName)
+    lines(datasetone$days[c(1:ndays)],datasetone$fatalities[c(1:ndays)],lwd=3)
+    
+    newcases <- plogis(c(1:120),1.0/smo$coefficients[1,1],1.0/smo$coefficients[3,1],smo$coefficients[2,1])
+    lines(10*newcases,lty=5)
+    
+    lines(datasetone$days[c(1:ndays)],10*datasetone$newfatalities[c(1:ndays)],lty=4,lwd=2)
+  }
+  else
+  {
+    plot(datasetone$days[c(1:ndays)],datasetone$fatalities[c(1:ndays)],type="l",lty=2,xlab="days",ylab="% Fatalities",main=mainName)
+    lines(datasetone$days[c(1:ndays)],10*datasetone$newfatalities[c(1:ndays)],lty=4,lwd=2)
+  }
+
+  endDay <- 0
+  mainName <- paste("April 6",names(totaldeaths[countryNumber]))
+
+  ndays <- max(c(numdays - endDay,7))
+  startday <- max(1,ndays - daysWindow)
+  
+  daysrange <- append(c(startday:ndays),c((nrow(datasetone)-5):nrow(datasetone)))
+  roestimate <- try(nls(fatalities ~ SSlogis(days, Asym, xmid, scal),data = datasetone[daysrange,],control=list(warnOnly=TRUE)))
+  
+  smo <- summary(roestimate)
+  predictedTotalCases <- SSlogis(c(1:120),smo$coefficients[1,1],smo$coefficients[2,1],smo$coefficients[3,1])
+  ymax <- max(c(predictedTotalCases,datasetone$fatalities))
+  plot(predictedTotalCases,ylim=c(0,ymax),type="l",lty=2,xlab="days",ylab="% Fatalities",main=mainName)
+  lines(datasetone$days[c(1:ndays)],datasetone$fatalities[c(1:ndays)],lwd=3)
+  
+  newcases <- plogis(c(1:120),1.0/smo$coefficients[1,1],1.0/smo$coefficients[3,1],smo$coefficients[2,1])
+  lines(10*newcases,lty=5)
+  
+  lines(datasetone$days[c(1:ndays)],10*datasetone$newfatalities[c(1:ndays)],lty=4,lwd=2)
+    
+}
+
+```
+
